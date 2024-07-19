@@ -1,7 +1,6 @@
 
 #---00.初始化与加载包---
 
-#rm(list=ls())
 options(stringsAsFactors = F)
 Sys.setenv(LANGUAGE = "en")
 library(WGCNA)
@@ -14,8 +13,8 @@ enableWGCNAThreads(nThreads = 0.75*parallel::detectCores())
 #---01.文件指定---
 
 #指定基因表达矩阵和表现型矩阵（可为空）
-geneExPath = 'All_fpkm.list' #基因表达量路径
-phenoPath = 'pheno.txt'
+geneExPath = 'DEG_fpkm.xls' #基因表达量路径
+phenoPaths = c('Trait1.xls','Trait2.xls','Trait0.xls') #特征表文件名
 # WGCNA原理
 # 1.构建基因关系网络：
 # ①基因间相关性系数；
@@ -28,9 +27,9 @@ phenoPath = 'pheno.txt'
 # 加载数据
 dataExpr <- read.delim(geneExPath,header=T,row.names = 1,sep="\t",na.strings = "-")
 dim(dataExpr)
-head(dataExpr)[,1:8]
 dataExpr <- na.omit(dataExpr)
 #dataExpr <- dataExpr[0:1000,]#测试时选择较少的基因
+dim(dataExpr)
 
 # 数据筛选
 ## 筛选中位绝对偏差前75%的基因，至少MAD大于0.01
@@ -46,8 +45,6 @@ dataExpr <- as.data.frame(t(dataExprVar))
 ## 检测缺失值
 gsg = goodSamplesGenes(dataExpr, verbose = 3)
 
-##  Flagging genes and samples with too many missing values...
-##   ..step 1
 
 if (!gsg$allOK){
   # Optionally, print the gene and sample names that were removed:
@@ -139,6 +136,9 @@ if (is.na(power)){
 }
 
 
+k = softConnectivity(dataExpr, power = power) -1
+scaleFreePlot(k, main = paste("data set I, power=", power), truncated = F)
+
 #---02.网络构建---
 
 ##一步法网络构建：One-step network construction and module detection##
@@ -196,12 +196,12 @@ MEs = net$MEs
 ### 不需要重新计算，改下列名字就好
 ### 官方教程是重新计算的，起始可以不用这么麻烦
 MEs_col = MEs
-colnames(MEs_col) = paste0("ME", labels2colors(
+colnames(MEs_col) = paste0("ME.", labels2colors(
   as.numeric(str_replace_all(colnames(MEs),"ME",""))))
 MEs_col = orderMEs(MEs_col)
 # 根据基因间表达量进行聚类所得到的各模块间的相关性图
 # marDendro/marHeatmap 设置下、左、上、右的边距
-pdf("04-Eigengene-adjacency-heatmap.pdf",width = 6, height = 6)
+pdf("04-Eigengene-adjacency-heatmap.pdf",width = 10, height = 6)
 plotEigengeneNetworks(MEs_col, "Eigengene adjacency heatmap", 
                       marDendro = c(3,3,2,4),
                       marHeatmap = c(3,4,2,2), plotDendrograms = T, 
@@ -253,51 +253,13 @@ dimnames(TOM) <- list(probes, probes)
 cyt = exportNetworkToCytoscape(TOM,
                                edgeFile = paste("06-",geneExPath, ".edges.txt", sep=""),
                                nodeFile = paste("07-",geneExPath, ".nodes.txt", sep=""),
-                               weighted = TRUE, threshold = 0,
+                               weighted = TRUE, threshold = 0,  #阈值可以设置很小在软件上也可以设置
                                nodeNames = probes, nodeAttr = moduleColors)
 
 
-#---05.关联表型数据---
 
-if(phenoPath != "") {
-  traitData <- read.table(file=phenoPath, sep='\t', header=T, row.names=1,
-                          check.names=FALSE, comment='',quote="")
-  sampleName = rownames(dataExpr)
-  traitData = traitData[match(sampleName, rownames(traitData)), ]
-}
+#---05.自定义模块-表型关联图---
 
-### 模块与表型数据关联
-if (corType=="pearsoon") {
-  modTraitCor = cor(MEs_col, traitData, use = "p")
-  modTraitP = corPvalueStudent(modTraitCor, nSamples)
-} else {
-  modTraitCorP = bicorAndPvalue(MEs_col, traitData, 
-                                #robustY=robustY,
-                                )
-  modTraitCor = modTraitCorP$bicor
-  modTraitP   = modTraitCorP$p
-}
-
-## Warning in bicor(x, y, use = use, ...): bicor: zero MAD in variable 'y'.
-## Pearson correlation was used for individual columns with zero (or missing)
-## MAD.
-
-# signif表示保留几位小数
-textMatrix = paste(signif(modTraitCor, 2), "\n(", signif(modTraitP, 1), ")", sep = "")
-dim(textMatrix) = dim(modTraitCor)
-pdf("08-Module-trait-relationships.pdf",width = 6, height = 6)
-labeledHeatmap(Matrix = modTraitCor, xLabels = colnames(traitData), 
-               yLabels = colnames(MEs_col), 
-               cex.lab = 0.5, 
-               ySymbols = colnames(MEs_col), colorLabels = FALSE, 
-               colors = blueWhiteRed(50), 
-               textMatrix = textMatrix, setStdMargins = FALSE, 
-               cex.text = 0.5, zlim = c(-1,1),
-               main = paste("Module-trait relationships"))
-dev.off()
-
-
-#---06.自定义模块-表型关联图---
 ## 比如MEblue模块与Trait1相关
 
 ## 模块内基因与表型数据关联
@@ -323,27 +285,29 @@ if (corType=="pearsoon") {
   MMPvalue   = geneModuleMembershipA$p
 }
 
-# 计算性状与基因的相关性矩阵
 
-## 只有连续型性状才能进行计算，如果是离散变量，在构建样品表时就转为0-1矩阵。
-
-if (corType=="pearsoon") {
-  geneTraitCor = as.data.frame(cor(dataExpr, traitData, use = "p"))
-  geneTraitP = as.data.frame(corPvalueStudent(
-    as.matrix(geneTraitCor), nSamples))
-} else {
-  geneTraitCorA = bicorAndPvalue(dataExpr, traitData, 
-                                # robustY=robustY
-                                 )
-  geneTraitCor = as.data.frame(geneTraitCorA$bicor)
-  geneTraitP   = as.data.frame(geneTraitCorA$p)
-}
-
-## Warning in bicor(x, y, use = use, ...): bicor: zero MAD in variable 'y'.
-## Pearson correlation was used for individual columns with zero (or missing)
-## MAD.
 
 if(F){
+  
+  # 计算性状与基因的相关性矩阵
+  
+  ## 只有连续型性状才能进行计算，如果是离散变量，在构建样品表时就转为0-1矩阵。
+  
+  if (corType=="pearsoon") {
+    geneTraitCor = as.data.frame(cor(dataExpr, traitData, use = "p"))
+    geneTraitP = as.data.frame(corPvalueStudent(
+      as.matrix(geneTraitCor), nSamples))
+  } else {
+    geneTraitCorA = bicorAndPvalue(dataExpr, traitData, 
+                                   # robustY=robustY
+    )
+    geneTraitCor = as.data.frame(geneTraitCorA$bicor)
+    geneTraitP   = as.data.frame(geneTraitCorA$p)
+  }
+  
+  ## Warning in bicor(x, y, use = use, ...): bicor: zero MAD in variable 'y'.
+  ## Pearson correlation was used for individual columns with zero (or missing)
+  ## MAD.
 # 最后把两个相关性矩阵联合起来,指定感兴趣模块进行分析
 module = "blue"#去掉ME
 pheno = "Trait1"
@@ -373,7 +337,7 @@ dev.off()
 expColor=t(numbers2colors(log10(dataExpr+1),colors=blueWhiteRed(100),naColor="grey"))
 colnames(expColor)=rownames(dataExpr)
 #绘制基因的树形图，模块图，以及每个样品的表达图
-pdf("09-wgcna.dendroColors.pdf",height = 7,width = 9)
+pdf("08-wgcna.dendroColors.pdf",height = 7,width = 12)
 plotDendroAndColors(net$dendrograms[[1]], 
                     colors=cbind(moduleColors[net$blockGenes[[1]]],expColor),
                     c("Module",colnames(expColor)),
@@ -383,17 +347,20 @@ plotDendroAndColors(net$dendrograms[[1]],
 dev.off()
 
 #绘制两两模块间的邻接矩阵
-pdf("10-wgcna.adjacency.heatmap.pdf",height = 10,width = 9)
+pdf("09-wgcna.adjacency.heatmap.pdf",height = 6,width = 9)
 plotEigengeneNetworks(MEs_col, # MEs输出的是文本
                       "Eigengene adjacency heatmap",plotDendrograms = F,
                       marDendro = c(4,4,2,4))
 dev.off()
 
 #绘制所有模块的表达值热图与特征值条形图
-for(module in substring(colnames(MEs_col),3)){
+flag = 0
+for(module in substring(colnames(MEs_col),4)){ #注意substring的第二个参数是颜色前的前缀字数比如ME填写3，ME.填写4
   if(module == "grey") next
-  ME=MEs_col[,paste("ME",module,sep="")]
-  pdf(paste("11-wgcna.", module, ".express.barplot.pdf", sep=""),height = 7,width = 9)
+  #module="red"
+  flag = flag+1
+  ME=MEs_col[,paste("ME.",module,sep="")]
+  pdf(paste("10-",flag,"-wgcna.", module, ".express.barplot.pdf", sep=""),height = 7,width = 9)
   par(mfrow=c(2,1),mar=c(0.3,5.5,3,2))
   plotMat(t(scale(dataExpr[,moduleColors==module])),
           rlabels=F,main=module,cex.main=2,clabels=F)
@@ -406,50 +373,80 @@ for(module in substring(colnames(MEs_col),3)){
 #重新计算TOM矩阵
 
 #TOM = TOMsimilarityFromExpr(dataExpr, power =sft$powerEstimate,TOMType = "unsigned"); 
-
-for(module in substring(colnames(MEs_col),3)){
+flag = 0
+for(module in substring(colnames(MEs_col),4)){  #注意substring的第二个参数是颜色前的前缀字数比如ME填写3，ME.填写4
   if(module == "grey") next
+  flag = flag+1
   probes = colnames(dataExpr)
   inModule = is.finite(match(moduleColors, module))
   modProbes = probes[inModule]
   modTOM = TOM[inModule, inModule]
   dimnames(modTOM) = list(modProbes, modProbes)
   cyt = exportNetworkToCytoscape(modTOM,
-                                 edgeFile = paste("12-CytoscapeInput-edges-", module, ".txt", sep=""),
-                                 nodeFile = paste("13-CytoscapeInput-nodes-", module, ".txt", sep=""),
+                                 edgeFile = paste("11-",flag,"-CytoscapeInput-edges-", module, ".txt", sep=""),
+                                 nodeFile = paste("12-",flag,"-CytoscapeInput-nodes-", module, ".txt", sep=""),
                                  weighted = TRUE,
-                                 threshold = 0.02,
+                                 threshold = 0,   #TOMcutoff
                                  nodeNames = modProbes,
                                  nodeAttr = moduleColors[inModule])
 }
 
-allTraits<-read.delim(phenoPath,header=T,sep="\t")  #读取表型值
-dataTraits = allTraits[, -1] 
 
+#---关联表型---
+
+#####################如果更改特征表，只需要重新执行下面的分析！！！
 #计算ME与表型的相关系数，并计算p值
-moduleTraitCor = cor(MEs_col, dataTraits, use = "p") # use=p代表去掉缺失计算
-moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)#
+flag = 0
+for(phenoPath in phenoPaths){
+  #phenoPath = phenoPaths[1]
+  flag = flag+1
+  allTraits<-read.delim(phenoPath,header=T,sep="\t")  #读取表型值
+  dataTraits = allTraits[, -1]
+  tem = MEs_col[as.list(allTraits[1])$SampleID, ] #SampleID是对应特征表的样本列列名！
+  moduleTraitCor = cor(tem, dataTraits, use = "p")# use=p代表去掉缺失计算
+  moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nrow(tem))
+  #整理要显示在图中的数字,第一行为相关系数，第二行为p值
+  textMatrix =  paste(signif(moduleTraitCor, 2), "\n(",
+                      signif(moduleTraitPvalue, 1), ")", sep = "");
+  dim(textMatrix) = dim(moduleTraitCor)
+  
+  #绘制关联热图
+  pdf(paste("13-",flag,"-wgcna.Module-trait.heatmap.pdf"), width = 10, height = 10)
+  par(mar = c(6, 8.8, 3, 2.2))  
+  labeledHeatmap(Matrix = moduleTraitCor,   #相关系数
+                 xLabels = colnames(dataTraits), #x轴为表型
+                 yLabels = names(MEs_col),#y轴为模块
+                 ySymbols = names(MEs_col),
+                 colorLabels = FALSE, 
+                 colors = blueWhiteRed(50),
+                 textMatrix = textMatrix, #每个单元格的内容
+                 setStdMargins = FALSE,
+                 cex.text = 0.8,
+                 zlim = c(-1,1),
+                 main = "Module-trait relationships")
+  dev.off()
+  
+  pdf(paste("13-",flag,".2-wgcna.Module-trait.heatmap.pdf"), width = 15, height = 8)
+  par(mar = c(6, 8.8, 3, 2.2))  
+  labeledHeatmap(Matrix = moduleTraitCor,   #相关系数
+                 xLabels = colnames(dataTraits), #x轴为表型
+                 yLabels = names(MEs_col),#y轴为模块
+                 ySymbols = names(MEs_col),
+                 colorLabels = FALSE, 
+                 colors = blueWhiteRed(50),
+                 textMatrix = textMatrix, #每个单元格的内容
+                 setStdMargins = FALSE,
+                 cex.text = 0.8,
+                 zlim = c(-1,1),
+                 main = "Module-trait relationships")
+  dev.off()
+  write.table(moduleTraitCor,file = paste("14-",flag,"-Module-trait-Correlation-coefficient.xls"),sep = "\t")
+  write.table(moduleTraitCor,file = paste("15-",flag,"-Module-trait-Correlation-Pvalue.xls"),sep = "\t")
+  #绘制相关性系数图不需要重新运行
+}
 
-#整理要显示在图中的数字,第一行为相关系数，第二行为p值
-textMatrix =  paste(signif(moduleTraitCor, 2), "\n(",
-                    signif(moduleTraitPvalue, 1), ")", sep = "");
-dim(textMatrix) = dim(moduleTraitCor)
 
-#绘制关联热图
-pdf("14-wgcna.Module-trait.heatmap.pdf", width = 10, height = 15)
-par(mar = c(6, 8.8, 3, 2.2))  
-labeledHeatmap(Matrix = moduleTraitCor,   #相关系数
-               xLabels = colnames(dataTraits), #x轴为表型
-               yLabels = names(MEs_col),#y轴为模块
-               ySymbols = names(MEs_col),
-               colorLabels = FALSE, 
-               colors = blueWhiteRed(50),
-               textMatrix = textMatrix, #每个单元格的内容
-               setStdMargins = FALSE,
-               cex.text = 0.8,
-               zlim = c(-1,1),
-               main = "Module-trait relationships")
-dev.off()
+
 
 
 #---08.Hubgene提取---
@@ -458,84 +455,112 @@ dev.off()
 #第一种： 先计算邻接矩阵，再计算连通度，推荐此种,邻接矩阵(Adjacency matrix)指基因和基因之间的加权相关性值取power次方即无尺度化之后构成的矩阵。
 adjacency = abs(cor(dataExpr,use="p"))^power #datExpr为表达矩阵，power请与一步法中的软阈值保持一致
 kIM <- intramodularConnectivity(adjacency, moduleColors)
+write.table(kIM,file = "16-KIM.xls",sep = "\t")
 
 #第二种：直接输入表达矩阵计算
 #kIM <- intramodularConnectivity.fromExpr(dataExpr, colors, power = power)
 
 #2. WGCNA自带一个函数，可以提取每个模块中连通度最高的基因
 hub = chooseTopHubInEachModule(dataExpr,moduleColors, omitColors = "grey", power = power)
+write.table(hub,file = "17-Hubgene.xls",sep = "\t")
 
 #3. 有的文献中认为，hubgene 应该在某一模块中，与核心性状关联且与此模块也同样关联,比如：|GS|>.2&|MM|>.8 。
 #GS 为 gene significance 缩写,反映某基因表达量与对应表型数值的相关性，调用 cor 函数计算相关性，绝对值越大，相关性越大，越趋近0，越不相关。
 #MM 为 module membership 缩写，反映某基因表达量与模块特征值(module eigengenes)的相关。同样调用 cor 函数计算相关性，绝对值越大，相关性越大，越趋近0，越不相关。
 #ps: 模块特征值 (module eigengenes) 是指基因和样本矩阵进行PCA分析后，每个模块的第一主成分即PC1,是此模块特性的高度代表,可以理解为一个模块就是一个超级代表基因。
 #3.1.首先计算模块特征值(module eigengenes)
-MEs = moduleEigengenes(datExpr, moduleColors)$eigengenes
+MEs2 = moduleEigengenes(dataExpr, moduleColors)$eigengenes
 
 #3.2.计算module membership即MM
-datKME =signedKME(datExpr, MEs, outputColumnName="MM.")
+datKME =signedKME(dataExpr, MEs2, outputColumnName="MM.")
+write.table(datKME,file = "18-MM.xls",sep = "\t")
+#等价于：
+#modNames = substring(names(MEs_col), 4)
+#MM = as.data.frame(cor(dataExpr, MEs_col, use = "p"))
+
 
 #3.3.gene significance即GS
-GS = as.data.frame(cor(datExpr, datTraits, use = "p")) #datTraits为目标性状的矩阵文件
+flag = 0
+for(phenoPath in phenoPaths){
+  flag = flag+1
+  allTraits<-read.delim(phenoPath,header=T,sep="\t")  #读取表型值
+  dataTraits = allTraits[, -1]
+  tem = dataExpr[as.list(allTraits[1])$SampleID, ] #SampleID是对应特征表的样本列列名！
+  
+  GS = as.data.frame(cor(tem, dataTraits, use = "p")) #datTraits为目标性状的矩阵文件
+  write.table(GS,file=paste("19-",flag,"-GS.xls"),sep="\t")
+}
 
+## 模块内基因连接度
+
+Alldegrees =intramodularConnectivity(adjacency, net$colors)
+write.table(Alldegrees,file = "20-intramodularConnectivity.xls",sep = "\t")
+#### kTotal:基因在整个网络中的连接度
+#### kWithin: 基因在所属模块中的连接度，即Intramodular connectivity
+#### kOut: kTotal-kWithin
+#### kDiff: kIn-kOut
+
+#也可以绘制一个模块基因的Intramodular connectivity与Gene significance的散点图
 #3.4.循环提取每个模块的hubgene
 MMname = colnames(datKME)
-for (mm in MMname){
+#for (mm in MMname){
+  mm = MMname[1]
   FilterGenes =abs(GS)> .2 & abs(datKME$mm)>.8
   hubgenes = dimnames(data.frame(dataExpr))[[2]][FilterGenes]  
-}
+#}
 #需要注意的是这里并没有添加显著检验，正确的做法应该是同时针对pvalue进行控制，比如：|GS|>.2 & |MM|>.8 & pvalue<0.05
 
 #4. 同时，WGCNA官方建议结合 GS 与 kWithin 进行筛选
 #比如: kWithin > 30 & |GS| >0.5
 
-#5. 实际操作中，由于导出到 cytoscape 等可视化工具时边的数量格外多，就需要额外进行一个过滤步骤。此时常用的是针对 TOM 值做一个阈值的筛选，例如只保留 TOM>0.8 的基因关系对，此时计算模块内基因的 degree ，值越高，则越可能为hubgene 。
-#5.1. 载入TOM值
-# 如果采用分步计算，或设置的blocksize>=总基因数，直接load计算好的TOM结果
-# 否则需要再计算一遍，比较耗费时间
-#TOM = TOMsimilarityFromExpr(datExpr, power = power)
 
-#假如之前一步法中设定一个block计算，则可以直接载入节省时间
-# load(net_power$TOMFiles[1], verbose=T)
-# TOM <- as.matrix(TOM)
-
-#5.2. 设定阈值并输出文件
-geneid_allnet <- names(datExpr)
-MEs = moduleEigengenes(datExpr, moduleColors)$eigengenes
-modNames <- substring(names(MEs),3) 
-TOMcutoff <- 0.8 #实际操作中我建议设定一个小的值，到cytoscape中再进行个性化调整
-
-#循环输出所有模块
-for (mod in 1:nrow(table(moduleColors)))
-{
-  modules = names(table(moduleColors))[mod]
-  # Select module probes
-  probes = names(datExpr)
-  inModule = (moduleColors == modules)
-  modProbes = probes[inModule]
-  modGenes = modProbes
-  # Select the corresponding Topological Overlap
-  modTOM = TOM[inModule, inModule]
-  
-  dimnames(modTOM) = list(modProbes, modProbes)
-  # Export the network into edge and node list files Cytoscape can read
-  cyt = exportNetworkToCytoscape(modTOM,
-                                 edgeFile = paste("CytoscapeInput-edges-", modules , ".txt", sep=""),
-                                 nodeFile = paste("CytoscapeInput-nodes-", modules, ".txt", sep=""),
-                                 weighted = TRUE,
-                                 threshold = TOMcutoff,
-                                 nodeNames = modProbes,
-                                 altNodeNames = modGenes,
-                                 nodeAttr = moduleColors[inModule])
-}
-
-#5.3，接下来针对CytoscapeInput-edges-*txt文件，进行统计，看哪个基因degree（边的数目总和）高，则此基因为hubgene
-
-#6. 除开以上连通度，度的衡量和过滤，hubgene的筛选还要采取灵活的方法，结合自己的研究目的及更多的数据进行。
 
 
 
 if(F){
+  #5. 实际操作中，由于导出到 cytoscape 等可视化工具时边的数量格外多，就需要额外进行一个过滤步骤。此时常用的是针对 TOM 值做一个阈值的筛选，例如只保留 TOM>0.8 的基因关系对，此时计算模块内基因的 degree ，值越高，则越可能为hubgene 。
+  #5.1. 载入TOM值
+  # 如果采用分步计算，或设置的blocksize>=总基因数，直接load计算好的TOM结果
+  # 否则需要再计算一遍，比较耗费时间
+  #TOM = TOMsimilarityFromExpr(datExpr, power = power)
+  
+  #假如之前一步法中设定一个block计算，则可以直接载入节省时间
+  # load(net_power$TOMFiles[1], verbose=T)
+  # TOM <- as.matrix(TOM)
+  
+  #5.2. 设定阈值并输出文件
+  geneid_allnet <- names(dataExpr)
+  MEs = moduleEigengenes(dataExpr, moduleColors)$eigengenes
+  modNames <- substring(names(MEs),4) 
+  TOMcutoff <- 0.8 #实际操作中我建议设定一个小的值，到cytoscape中再进行个性化调整
+  
+  #循环输出所有模块
+  for (mod in 1:nrow(table(moduleColors))){
+    modules = names(table(moduleColors))[mod]
+    # Select module probes
+    probes = names(dataExpr)
+    inModule = (moduleColors == modules)
+    modProbes = probes[inModule]
+    modGenes = modProbes
+    # Select the corresponding Topological Overlap
+    modTOM = TOM[inModule, inModule]
+    
+    dimnames(modTOM) = list(modProbes, modProbes)
+    # Export the network into edge and node list files Cytoscape can read
+    cyt = exportNetworkToCytoscape(modTOM,
+                                   edgeFile = paste("CytoscapeInput-edges-", modules , ".txt", sep=""),
+                                   nodeFile = paste("CytoscapeInput-nodes-", modules, ".txt", sep=""),
+                                   weighted = TRUE,
+                                   threshold = TOMcutoff,
+                                   nodeNames = modProbes,
+                                   altNodeNames = modGenes,
+                                   nodeAttr = moduleColors[inModule])
+  }
+  
+  #5.3，接下来针对CytoscapeInput-edges-*txt文件，进行统计，看哪个基因degree（边的数目总和）高，则此基因为hubgene
+  
+  #6. 除开以上连通度，度的衡量和过滤，hubgene的筛选还要采取灵活的方法，结合自己的研究目的及更多的数据进行。
+  
 
 #分步法展示每一步都做了什么
 ### 计算邻接矩阵
